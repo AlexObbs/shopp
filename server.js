@@ -20,6 +20,10 @@ app.get('/health', (req, res) => {
 });
 
 // Create checkout session endpoint
+// In server.js - modify the create-checkout-session endpoint
+
+// Updated server.js create-checkout-session endpoint with better currency logging
+
 app.post('/create-checkout-session', async (req, res) => {
   try {
     // Extract all relevant data from the request body
@@ -30,8 +34,13 @@ app.post('/create-checkout-session', async (req, res) => {
       amount,          // Final amount after discount
       packageName,
       couponCode,      // Coupon code if applied
-      discountAmount   // Amount discounted
+      discountAmount,  // Amount discounted
+      currency         // Currency parameter
     } = req.body;
+    
+    // Enhanced logging for currency debugging
+    console.log('Received currency in request:', currency);
+    console.log('Request body:', req.body);
     
     console.log('Creating checkout session:', { 
       packageId, 
@@ -40,7 +49,8 @@ app.post('/create-checkout-session', async (req, res) => {
       finalAmount: amount, 
       packageName,
       couponCode,
-      discountAmount 
+      discountAmount,
+      currency        
     });
     
     // Validate required fields
@@ -70,20 +80,37 @@ app.post('/create-checkout-session', async (req, res) => {
       
     // Prepare product description
     const productDescription = couponCode && discountAmount 
-      ? `Original price: £${originalAmount.toFixed(2)}, Discount: £${discountAmount.toFixed(2)}`
+      ? `Original price: ${currency || 'GBP'} ${originalAmount.toFixed(2)}, Discount: ${currency || 'GBP'} ${discountAmount.toFixed(2)}`
       : 'KenyaOnABudget Safaris booking';
 
-    // For local testing, redirect to localhost URLs
+    // IMPROVED CURRENCY HANDLING
+    // Normalize and validate the currency explicitly
+    let paymentCurrency = 'gbp'; // Default
+    
+    if (currency) {
+      // Convert to lowercase and check for valid values
+      const normalizedCurrency = String(currency).toLowerCase();
+      console.log('Normalized currency value:', normalizedCurrency);
+      
+      if (normalizedCurrency === 'usd') {
+        paymentCurrency = 'usd';
+        console.log('Setting currency to USD for this checkout');
+      }
+    }
+      
+    console.log(`Final currency decision: ${paymentCurrency} for checkout session`);
+
+    // Create the Stripe checkout session with the determined currency
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
-          currency: 'gbp',
+          currency: paymentCurrency,  // Use the processed currency
           product_data: {
             name: productName,
             description: productDescription
           },
-          unit_amount: Math.round(amount * 100), // Convert to pence - use discounted amount
+          unit_amount: Math.round(amount * 100), // Convert to smallest unit (pence/cents)
         },
         quantity: 1,
       }],
@@ -99,22 +126,24 @@ app.post('/create-checkout-session', async (req, res) => {
         originalAmount: originalAmount ? originalAmount.toString() : amount.toString(),
         discountAmount: discountAmount ? discountAmount.toString() : '0',
         couponCode: couponCode || 'none',
-        hasCoupon: couponCode ? 'true' : 'false'
+        hasCoupon: couponCode ? 'true' : 'false',
+        currency: paymentCurrency  // Store the currency in metadata
       }
     });
 
-    console.log('Checkout session created:', session.id);
+    console.log('Checkout session created with currency:', paymentCurrency);
+    console.log('Session ID:', session.id);
     
     res.json({ 
       id: session.id,
-      timestamp: timestamp 
+      timestamp: timestamp,
+      currency: paymentCurrency // Return the currency in the response for confirmation
     });
   } catch (error) {
     console.error('Error creating checkout session:', error);
     res.status(500).json({ error: error.message });
   }
 });
-
 // Verify payment endpoint
 app.post('/verify-payment', async (req, res) => {
   try {
