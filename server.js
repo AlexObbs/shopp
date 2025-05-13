@@ -20,10 +20,6 @@ app.get('/health', (req, res) => {
 });
 
 // Create checkout session endpoint
-// In server.js - modify the create-checkout-session endpoint
-
-// Updated server.js create-checkout-session endpoint with better currency logging
-
 app.post('/create-checkout-session', async (req, res) => {
   try {
     // Extract all relevant data from the request body
@@ -34,13 +30,8 @@ app.post('/create-checkout-session', async (req, res) => {
       amount,          // Final amount after discount
       packageName,
       couponCode,      // Coupon code if applied
-      discountAmount,  // Amount discounted
-      currency         // Currency parameter
+      discountAmount   // Amount discounted
     } = req.body;
-    
-    // Enhanced logging for currency debugging
-    console.log('Received currency in request:', currency);
-    console.log('Request body:', req.body);
     
     console.log('Creating checkout session:', { 
       packageId, 
@@ -49,8 +40,7 @@ app.post('/create-checkout-session', async (req, res) => {
       finalAmount: amount, 
       packageName,
       couponCode,
-      discountAmount,
-      currency        
+      discountAmount 
     });
     
     // Validate required fields
@@ -80,42 +70,25 @@ app.post('/create-checkout-session', async (req, res) => {
       
     // Prepare product description
     const productDescription = couponCode && discountAmount 
-      ? `Original price: ${currency || 'GBP'} ${originalAmount.toFixed(2)}, Discount: ${currency || 'GBP'} ${discountAmount.toFixed(2)}`
+      ? `Original price: £${originalAmount.toFixed(2)}, Discount: £${discountAmount.toFixed(2)}`
       : 'KenyaOnABudget Safaris booking';
 
-    // IMPROVED CURRENCY HANDLING
-    // Normalize and validate the currency explicitly
-    let paymentCurrency = 'gbp'; // Default
-    
-    if (currency) {
-      // Convert to lowercase and check for valid values
-      const normalizedCurrency = String(currency).toLowerCase();
-      console.log('Normalized currency value:', normalizedCurrency);
-      
-      if (normalizedCurrency === 'usd') {
-        paymentCurrency = 'usd';
-        console.log('Setting currency to USD for this checkout');
-      }
-    }
-      
-    console.log(`Final currency decision: ${paymentCurrency} for checkout session`);
-
-    // Create the Stripe checkout session with the determined currency
+    // For local testing, redirect to localhost URLs
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [{
         price_data: {
-          currency: paymentCurrency,  // Use the processed currency
+          currency: 'gbp',
           product_data: {
             name: productName,
             description: productDescription
           },
-          unit_amount: Math.round(amount * 100), // Convert to smallest unit (pence/cents)
+          unit_amount: Math.round(amount * 100), // Convert to pence - use discounted amount
         },
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `https://kenyaonabudgetsafaris.co.uk/packages/payment-success.html?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&timestamp=${timestamp}`,
+      success_url: `http://127.0.0.1:5500/payment-success.html?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&timestamp=${timestamp}`,
       cancel_url: `https://kenyaonabudgetsafaris.co.uk/packages/payment-cancelled.html?userId=${userId}&timestamp=${timestamp}`,
       client_reference_id: userId,
       metadata: {
@@ -126,24 +99,22 @@ app.post('/create-checkout-session', async (req, res) => {
         originalAmount: originalAmount ? originalAmount.toString() : amount.toString(),
         discountAmount: discountAmount ? discountAmount.toString() : '0',
         couponCode: couponCode || 'none',
-        hasCoupon: couponCode ? 'true' : 'false',
-        currency: paymentCurrency  // Store the currency in metadata
+        hasCoupon: couponCode ? 'true' : 'false'
       }
     });
 
-    console.log('Checkout session created with currency:', paymentCurrency);
-    console.log('Session ID:', session.id);
+    console.log('Checkout session created:', session.id);
     
     res.json({ 
       id: session.id,
-      timestamp: timestamp,
-      currency: paymentCurrency // Return the currency in the response for confirmation
+      timestamp: timestamp 
     });
   } catch (error) {
     console.error('Error creating checkout session:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
 // Verify payment endpoint
 app.post('/verify-payment', async (req, res) => {
   try {
