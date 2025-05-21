@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
 
@@ -88,7 +89,7 @@ app.post('/create-checkout-session', async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `http://127.0.0.1:5500/payment-success.html?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&timestamp=${timestamp}`,
+      success_url: `https://kenyaonabudgetsafaris.co.uk/payment-success.html?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&timestamp=${timestamp}`,
       cancel_url: `https://kenyaonabudgetsafaris.co.uk/packages/payment-cancelled.html?userId=${userId}&timestamp=${timestamp}`,
       client_reference_id: userId,
       metadata: {
@@ -165,9 +166,28 @@ app.post('/verify-payment', async (req, res) => {
   }
 });
 
+// Add endpoint to ping companion app
+app.get('/ping-companion', async (req, res) => {
+  try {
+    const companionUrl = process.env.COMPANION_APP_URL;
+    if (!companionUrl) {
+      return res.status(400).json({ error: 'Companion app URL not configured' });
+    }
+    
+    const response = await fetch(`${companionUrl}/health`);
+    const data = await response.json();
+    
+    console.log('🏓 Pinged companion app successfully:', data);
+    res.json({ success: true, companionStatus: data });
+  } catch (error) {
+    console.error('Failed to ping companion app:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start the server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
 ===========================================
 🔥 Payment Server running on port ${PORT} 🔥
@@ -177,7 +197,44 @@ Available endpoints:
 - GET  /health                     - Check server health
 - POST /create-checkout-session    - Create Stripe checkout session (now supports coupons!)
 - POST /verify-payment             - Verify payment status
+- GET  /ping-companion             - Ping companion app to keep it alive
 
 Server is ready for local testing with Stripe!
   `);
+  
+  // Set up keep-alive mechanisms
+  setupKeepAlive();
 });
+
+function setupKeepAlive() {
+  // Add keep-alive ping to prevent sleep on Render free tier
+  if (process.env.NODE_ENV === 'production') {
+    // 1. Self-ping to keep this server alive
+    const serviceUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    setInterval(() => {
+      try {
+        fetch(`${serviceUrl}/health`)
+          .then(() => console.log('🏓 Self keep-alive ping sent'))
+          .catch(err => console.error('Self keep-alive ping failed:', err.message));
+      } catch (error) {
+        console.error('Error sending self keep-alive ping:', error.message);
+      }
+    }, 10 * 60 * 1000); // Every 10 minutes
+    
+    // 2. Ping companion app to keep it alive
+    const companionUrl = process.env.COMPANION_APP_URL;
+    if (companionUrl) {
+      setInterval(() => {
+        try {
+          fetch(`${companionUrl}/health`)
+            .then(() => console.log('🏓 Companion keep-alive ping sent'))
+            .catch(err => console.error('Companion keep-alive ping failed:', err.message));
+        } catch (error) {
+          console.error('Error sending companion keep-alive ping:', error.message);
+        }
+      }, 14 * 60 * 1000); // Every 14 minutes (offset from self-ping to distribute pings)
+    } else {
+      console.warn('⚠️ Companion app URL not configured. Add COMPANION_APP_URL to your environment variables for mutual pinging.');
+    }
+  }
+}
