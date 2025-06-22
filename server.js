@@ -339,52 +339,143 @@ app.get('/api/tip/verify-checkout-session', async (req, res) => {
     console.log('Verifying tip checkout session:', session_id);
     
     // Retrieve the session from Stripe
-    const session = await stripe.checkout.sessions.retrieve(session_id);
+    let session;
+    try {
+      session = await stripe.checkout.sessions.retrieve(session_id);
+    } catch (stripeError) {
+      console.error('Error retrieving Stripe session:', stripeError);
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid or expired session ID'
+      });
+    }
     
     if (session.payment_status === 'paid') {
       // Get the payment details
-      const paymentIntent = await stripe.paymentIntents.retrieve(session.payment_intent);
+      let paymentIntent;
+      try {
+        paymentIntent = await stripe.paymentIntents.retrieve(session.payment_intent);
+      } catch (paymentError) {
+        console.error('Error retrieving payment intent:', paymentError);
+        // Still continue with basic session info
+        paymentIntent = { 
+          amount: session.amount_total,
+          currency: session.currency
+        };
+      }
       
       // Get metadata
       const { recipientType, recipientId, recipientName, userId, userName, message } = session.metadata || {};
       const amount = paymentIntent.amount / 100; // Convert from cents/pence
       
-      // Get recipient name if it's a guide
-      let finalRecipientName = recipientName || 'Kenya on a Budget Safaris';
-      if (recipientType === 'guide' && recipientId && !recipientName) {
-        const guideDoc = await db.collection('guides').doc(recipientId).get();
-        if (guideDoc.exists) {
-          finalRecipientName = guideDoc.data().fullName || 'Guide';
+      console.log('Processing tip payment:', {
+        recipientType,
+        recipientId,
+        recipientName,
+        amount
+      });
+      
+      // For guide tips, get the guide information using our improved function
+      if (recipientType === 'guide') {
+        try {
+          // Get guide information with email
+          const guideInfo = await getGuideInfo(recipientId, recipientName);
+          
+          if (guideInfo.exists) {
+            console.log(`Found guide: ${guideInfo.name}, Email: ${guideInfo.email || 'Not available'}`);
+            
+            // Save tip record to Firestore - using safe operation
+            try {
+              await safeFirestoreAdd('tips', {
+                stripePaymentIntentId: paymentIntent.id,
+                stripeSessionId: session_id,
+                amount,
+                currency: paymentIntent.currency,
+                recipientType,
+                recipientId: guideInfo.id || recipientId,
+                recipientName: guideInfo.name,
+                recipientEmail: guideInfo.email,
+                senderId: userId || 'anonymous',
+                senderName: userName || 'Anonymous',
+                message: message || '',
+                status: 'completed',
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              
+              console.log('Tip record saved to Firestore');
+            } catch (saveError) {
+              console.error('Error saving tip record:', saveError);
+              // Continue even if save fails - this shouldn't block the user experience
+            }
+            
+            // Send email notification to guide
+            try {
+              await sendGuideNotification(
+                guideInfo.id || recipientId, 
+                guideInfo.name, 
+                amount, 
+                userId, 
+                userName, 
+                message
+              );
+            } catch (emailError) {
+              console.error('Error sending guide notification:', emailError);
+            }
+            
+            // Return success with payment details
+            return res.json({
+              success: true,
+              payment: {
+                amount,
+                recipientType,
+                recipientId: guideInfo.id || recipientId,
+                recipientName: guideInfo.name,
+                status: 'completed'
+              }
+            });
+          } else {
+            console.warn(`Guide not found: ID: ${recipientId}, Name: ${recipientName}`);
+            // Fall back to original name if guide not found
+          }
+        } catch (guideError) {
+          console.error('Error getting guide information:', guideError);
+          // Continue with original data if guide lookup fails
         }
       }
       
-      // Save tip record to Firestore
-      await db.collection('tips').add({
-        stripePaymentIntentId: paymentIntent.id,
-        stripeSessionId: session_id,
-        amount,
-        currency: paymentIntent.currency,
-        recipientType,
-        recipientId,
-        recipientName: finalRecipientName,
-        senderId: userId || 'anonymous',
-        senderName: userName || 'Anonymous',
-        message: message || '',
-        status: 'completed',
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
+      // If we get here, either:
+      // 1. This is a company tip, or
+      // 2. Guide lookup failed and we're using original data
       
-      console.log('Tip verified and saved:', {
-        amount,
-        recipientType,
-        recipientName: finalRecipientName
-      });
+      // Save tip record to Firestore - using safe operation
+      try {
+        await safeFirestoreAdd('tips', {
+          stripePaymentIntentId: paymentIntent.id,
+          stripeSessionId: session_id,
+          amount,
+          currency: paymentIntent.currency,
+          recipientType,
+          recipientId,
+          recipientName: recipientName || 'Kenya on a Budget Safaris',
+          senderId: userId || 'anonymous',
+          senderName: userName || 'Anonymous',
+          message: message || '',
+          status: 'completed',
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      } catch (saveError) {
+        console.error('Error saving tip record:', saveError);
+      }
       
-      // Send notification emails
-      if (recipientType === 'guide' && recipientId) {
-        await sendGuideNotification(recipientId, finalRecipientName, amount, userId, userName, message);
-      } else {
-        await sendCompanyNotification(amount, userId, userName, message);
+      // Send notification emails based on recipient type
+      try {
+        if (recipientType === 'guide' && recipientId) {
+          await sendGuideNotification(recipientId, recipientName, amount, userId, userName, message);
+        } else {
+          await sendCompanyNotification(amount, userId, userName, message);
+        }
+      } catch (emailError) {
+        console.error('Error sending notification emails:', emailError);
       }
       
       // Return success with payment details
@@ -394,19 +485,24 @@ app.get('/api/tip/verify-checkout-session', async (req, res) => {
           amount,
           recipientType,
           recipientId,
-          recipientName: finalRecipientName,
+          recipientName: recipientName || 'Kenya on a Budget Safaris',
           status: 'completed'
         }
       });
     } else {
       res.json({
         success: false,
-        error: 'Payment not complete'
+        error: 'Payment not complete',
+        status: session.payment_status
       });
     }
   } catch (error) {
     console.error('Error verifying tip checkout session:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Server error processing verification',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred'
+    });
   }
 });
 
@@ -560,17 +656,190 @@ async function sendGuideNotification(guideId, guideName, amount, userId, userNam
   }
 }
 
+async function getGuideInfo(guideId, guideName) {
+  try {
+    let guideDoc = null;
+    let guideData = null;
+    
+    // First attempt: Try to get guide by ID directly
+    if (guideId) {
+      console.log(`Attempting to fetch guide with ID: ${guideId}`);
+      guideDoc = await db.collection('guides').doc(guideId).get();
+      
+      if (guideDoc.exists) {
+        guideData = guideDoc.data();
+        console.log(`Found guide by ID: ${guideId}, Name: ${guideData.fullName || guideData.name}`);
+        return {
+          id: guideId,
+          name: guideData.fullName || guideData.name || guideName,
+          email: guideData.email,
+          exists: true
+        };
+      } else {
+        console.log(`No guide found with ID: ${guideId}, falling back to name search`);
+      }
+    }
+    
+    // Second attempt: Try to find guide by name
+    if (guideName) {
+      console.log(`Searching for guide by name: ${guideName}`);
+      
+      // Try different fields that might contain the name
+      const nameFields = ['fullName', 'name', 'displayName'];
+      
+      for (const field of nameFields) {
+        const snapshot = await db.collection('guides')
+          .where(field, '==', guideName)
+          .limit(1)
+          .get();
+        
+        if (!snapshot.empty) {
+          guideDoc = snapshot.docs[0];
+          guideData = guideDoc.data();
+          console.log(`Found guide by ${field}: ${guideName}, ID: ${guideDoc.id}`);
+          return {
+            id: guideDoc.id,
+            name: guideData.fullName || guideData.name || guideName,
+            email: guideData.email,
+            exists: true
+          };
+        }
+      }
+      
+      // If still not found, try with case-insensitive search (can't do directly in Firestore)
+      // So instead, fetch a reasonable number of guides and filter in memory
+      console.log(`No exact name match, trying case-insensitive search`);
+      const allGuidesSnapshot = await db.collection('guides').limit(50).get();
+      
+      if (!allGuidesSnapshot.empty) {
+        for (const doc of allGuidesSnapshot.docs) {
+          const data = doc.data();
+          
+          for (const field of nameFields) {
+            const fieldValue = data[field];
+            if (fieldValue && typeof fieldValue === 'string' && 
+                fieldValue.toLowerCase() === guideName.toLowerCase()) {
+              console.log(`Found guide with case-insensitive match on ${field}: ${fieldValue}`);
+              return {
+                id: doc.id,
+                name: data.fullName || data.name || guideName,
+                email: data.email,
+                exists: true
+              };
+            }
+          }
+        }
+      }
+    }
+    
+    // If we get here, no guide was found by either method
+    console.log(`No guide found for ID: ${guideId} or name: ${guideName}`);
+    return {
+      exists: false,
+      name: guideName || 'Unknown Guide',
+      email: null
+    };
+  } catch (error) {
+    console.error('Error finding guide:', error);
+    return {
+      exists: false,
+      name: guideName || 'Unknown Guide',
+      email: null,
+      error: error.message
+    };
+  }
+}
 /**
  * Send email notification to admin about guide tip
  */
+async function sendGuideNotification(guideId, guideName, amount, userId, userName, message) {
+  try {
+    // Get guide information using the improved function
+    const guideInfo = await getGuideInfo(guideId, guideName);
+    
+    if (!guideInfo.exists || !guideInfo.email) {
+      console.error(`Cannot send notification: Guide not found or no email for ID: ${guideId}, Name: ${guideName}`);
+      return false;
+    }
+    
+    // Get admin emails (multiple supported)
+    const adminEmails = getAdminEmails();
+    
+    // Create email content with improved template
+    const emailContent = getGuideEmailTemplate(guideInfo.name, amount, userName, message);
+    
+    // Create Brevo send email object
+    const sendSmtpEmail = {
+      to: [{ email: guideInfo.email, name: guideInfo.name }],
+      cc: adminEmails,
+      sender: { 
+        email: 'noreply@kenyaonabudgetsafaris.co.uk', 
+        name: 'Kenya on a Budget Safaris' 
+      },
+      subject: 'You Received a Tip!',
+      htmlContent: emailContent
+    };
+    
+    // Send the email via Brevo
+    await apiInstance.sendTransacEmail(sendSmtpEmail);
+    
+    // Also send admin notification
+    await sendAdminGuideNotification(guideInfo.name, amount, userName, message);
+    
+    // Log in Firestore
+    await safeFirestoreAdd('emailNotifications', {
+      to: guideInfo.email,
+      subject: 'You Received a Tip!',
+      guideId: guideInfo.id,
+      guideName: guideInfo.name,
+      tipAmount: amount,
+      tipperName: userName || 'Anonymous',
+      message: message || '',
+      status: 'sent',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    console.log(`Tip notification email sent to guide ${guideInfo.name} (${guideInfo.email})`);
+    return true;
+  } catch (error) {
+    console.error('Error sending guide notification email:', error);
+    return false;
+  }
+}
+function getAdminEmails() {
+  // Check for multiple admin emails first (comma-separated)
+  if (process.env.ADMIN_EMAILS) {
+    return process.env.ADMIN_EMAILS.split(',')
+      .map(email => email.trim())
+      .filter(email => email.length > 0)
+      .map(email => ({ email, name: 'Admin' }));
+  } 
+  // Fall back to single admin email
+  else if (process.env.ADMIN_EMAIL) {
+    return [{ email: process.env.ADMIN_EMAIL, name: 'Admin' }];
+  }
+  // No admin emails configured
+  else {
+    console.warn('No admin emails configured. Set ADMIN_EMAILS or ADMIN_EMAIL environment variable.');
+    return [];
+  }
+}
 async function sendAdminGuideNotification(guideName, amount, userName, message) {
   try {
+    // Get admin emails
+    const adminEmails = getAdminEmails();
+    
+    if (adminEmails.length === 0) {
+      console.warn('No admin emails configured. Cannot send admin notification.');
+      return false;
+    }
+    
     // Create email content with improved template
     const emailContent = getAdminGuideEmailTemplate(guideName, amount, userName, message);
     
     // Create Brevo send email object
     const sendSmtpEmail = {
-      to: [{ email: process.env.ADMIN_EMAIL, name: 'Admin' }],
+      to: adminEmails,
       sender: { 
         email: 'noreply@kenyaonabudgetsafaris.co.uk', 
         name: 'Kenya on a Budget Safaris' 
@@ -582,7 +851,7 @@ async function sendAdminGuideNotification(guideName, amount, userName, message) 
     // Send the email via Brevo
     await apiInstance.sendTransacEmail(sendSmtpEmail);
     
-    console.log(`Admin notification sent for guide tip to ${guideName}`);
+    console.log(`Admin notification sent to ${adminEmails.length} admins for guide tip to ${guideName}`);
     return true;
   } catch (error) {
     console.error('Error sending admin notification for guide tip:', error);
@@ -595,12 +864,20 @@ async function sendAdminGuideNotification(guideName, amount, userName, message) 
  */
 async function sendCompanyNotification(amount, userId, userName, message) {
   try {
+    // Get admin emails
+    const adminEmails = getAdminEmails();
+    
+    if (adminEmails.length === 0) {
+      console.warn('No admin emails configured. Cannot send company tip notification.');
+      return false;
+    }
+    
     // Create email content with improved template
     const emailContent = getCompanyEmailTemplate(amount, userName, message);
     
     // Create Brevo send email object
     const sendSmtpEmail = {
-      to: [{ email: process.env.ADMIN_EMAIL, name: 'Admin' }],
+      to: adminEmails,
       sender: { 
         email: 'noreply@kenyaonabudgetsafaris.co.uk', 
         name: 'Kenya on a Budget Safaris' 
@@ -613,8 +890,8 @@ async function sendCompanyNotification(amount, userId, userName, message) {
     await apiInstance.sendTransacEmail(sendSmtpEmail);
     
     // Log in Firestore
-    await db.collection('emailNotifications').add({
-      to: process.env.ADMIN_EMAIL,
+    await safeFirestoreAdd('emailNotifications', {
+      to: adminEmails.map(admin => admin.email).join(', '),
       subject: 'Company Tip Received',
       tipAmount: amount,
       tipperName: userName || 'Anonymous',
@@ -623,7 +900,7 @@ async function sendCompanyNotification(amount, userId, userName, message) {
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    console.log(`Company tip notification email sent`);
+    console.log(`Company tip notification email sent to ${adminEmails.length} admins`);
     return true;
   } catch (error) {
     console.error('Error sending company notification email:', error);
