@@ -655,6 +655,103 @@ async function sendGuideNotification(guideId, guideName, amount, userId, userNam
     return false;
   }
 }
+/**
+ * Safe Firestore operation helpers
+ * Add these functions to your server.js file
+ */
+
+// Safely save data to Firestore
+async function safeFirestoreAdd(collectionName, data) {
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    const result = await db.collection(collectionName).add({
+      ...data,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    console.log(`Successfully added document to ${collectionName}: ${result.id}`);
+    return { success: true, id: result.id };
+  } catch (error) {
+    console.error(`Error adding document to ${collectionName}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Safely get data from Firestore
+async function safeFirestoreGet(collectionName, docId) {
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    const doc = await db.collection(collectionName).doc(docId).get();
+    if (!doc.exists) {
+      return { success: false, exists: false, message: 'Document not found' };
+    }
+    return { success: true, exists: true, data: doc.data() };
+  } catch (error) {
+    console.error(`Error getting document from ${collectionName}/${docId}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Safely update data in Firestore
+async function safeFirestoreUpdate(collectionName, docId, data) {
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    await db.collection(collectionName).doc(docId).update({
+      ...data,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    console.log(`Successfully updated document in ${collectionName}/${docId}`);
+    return { success: true };
+  } catch (error) {
+    console.error(`Error updating document in ${collectionName}/${docId}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Safely delete data from Firestore
+async function safeFirestoreDelete(collectionName, docId) {
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    await db.collection(collectionName).doc(docId).delete();
+    console.log(`Successfully deleted document in ${collectionName}/${docId}`);
+    return { success: true };
+  } catch (error) {
+    console.error(`Error deleting document in ${collectionName}/${docId}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Safely query data from Firestore
+async function safeFirestoreQuery(collectionName, queryFn) {
+  try {
+    if (!db) throw new Error('Firestore not initialized');
+    let query = db.collection(collectionName);
+    
+    // Apply the query function if provided
+    if (typeof queryFn === 'function') {
+      query = queryFn(query);
+    }
+    
+    const snapshot = await query.get();
+    const results = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    
+    return { success: true, count: results.length, results };
+  } catch (error) {
+    console.error(`Error querying ${collectionName}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Export these functions so they can be used throughout the application
+module.exports = {
+  safeFirestoreAdd,
+  safeFirestoreGet,
+  safeFirestoreUpdate,
+  safeFirestoreDelete,
+  safeFirestoreQuery
+};
 
 async function getGuideInfo(guideId, guideName) {
   try {
