@@ -301,8 +301,8 @@ app.post('/api/tip/create-checkout-session', async (req, res) => {
         },
       ],
       mode: 'payment',
-      success_url: successUrl || `https://kenyaonabudgetsafaris.co.uk/tip-success.html?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: cancelUrl || `https://kenyaonabudgetsafaris.co.uk/tip-cancel.html`,
+      success_url: successUrl || `https://kenyaonabudgetsafaris.co.uk/login/tip-success.html?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: cancelUrl || `https://kenyaonabudgetsafaris.co.uk/login/tip-cancel.html`,
       metadata: {
         recipientType,
         recipientId,
@@ -1187,7 +1187,7 @@ function getGuideEmailTemplate(guideName, amount, userName, message) {
                 <p>Best regards,<br>
                 Kenya on a Budget Safaris Team</p>
                 
-                <a href="https://kenyaonabudgetsafaris.co.uk/staff-portal" class="button">View in Staff Portal</a>
+                <a href="https://kenyaonabudgetsafaris.co.uk/guide.html" class="button">View in Staff Portal</a>
             </div>
             
             <div class="email-footer">
@@ -1407,7 +1407,7 @@ function getAdminGuideEmailTemplate(guideName, amount, userName, message) {
                 
                 <p>This tip has been processed through the website and will be included in the guide's next payment.</p>
                 
-                <a href="https://kenyaonabudgetsafaris.co.uk/admin-portal" class="button">View in Admin Portal</a>
+                <a href="https://kenyaonabudgetsafaris.co.uk/admin" class="button">View in Admin Portal</a>
             </div>
             
             <div class="email-footer">
